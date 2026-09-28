@@ -2,7 +2,8 @@
 
 ## Проект
 Android-аналог Apple Vehicle Motion Cues. Чистая Java, без AndroidX/Compose, UI строится в коде
-(без XML-лейаутов). Язык интерфейса — русский. minSdk 29, targetSdk 35. Целевое устройство — Google Pixel.
+(без XML-лейаутов). Исключение — `play-services-location` для распознавания поездки: он сам
+подтягивает androidx.core/fragment; в своём коде AndroidX не используем. Язык интерфейса — русский. minSdk 29, targetSdk 35. Целевое устройство — Google Pixel.
 
 ## Структура (app/src/main/java/com/maxlab/motioncues)
 - `CuesService` — foreground service (type `specialUse`). Добавляет полноэкранный оверлей
@@ -13,17 +14,20 @@ Android-аналог Apple Vehicle Motion Cues. Чистая Java, без Androi
 - `CuesView` — отрисовка точек (2 колонки с каждой стороны, шахматный сдвиг).
 - `CuesTileService` — плитка Quick Settings. Если старт FGS из фона запрещён — открывает
   активити с `EXTRA_AUTOSTART`.
-- `BtReceiver` — манифестный ресивер `ACL_CONNECTED/DISCONNECTED`; стартует/останавливает
-  сервис для выбранных устройств.
 - `DriveReceiver` — автовключение в дороге: Activity Recognition Transition API
   (`play-services-location`), `IN_VEHICLE` ENTER/EXIT, PendingIntent `FLAG_MUTABLE`.
   Нужно runtime-разрешение `ACTIVITY_RECOGNITION`. Подписка слетает после перезагрузки и обновления —
-  `BootReceiver` перерегистрирует по `BOOT_COMPLETED`/`MY_PACKAGE_REPLACED`.
-- Автостарт общий: `CuesService.autoStart/autoStop`. Старт с `ACTION_AUTO_START` ставит
-  `Prefs.autoStarted`; выключаем автоматически только то, что включили автоматически. Если старт
-  FGS из фона запрещён (Bluetooth-broadcast не даёт исключения) — уведомление «Нажми, чтобы включить».
-  События Activity Recognition — исключение из запрета, там старт проходит сразу.
-  На EXIT выключение отложено на `EXIT_GRACE_MS` (светофор/пробка), новый ENTER его отменяет.
+  `BootReceiver` перерегистрирует по `BOOT_COMPLETED`/`MY_PACKAGE_REPLACED`, `MainActivity.onResume`
+  подписывается повторно (подписка идемпотентна).
+- `CuesService.autoStart/autoStop`. `Prefs.autoStarted` ставит только `onStartCommand`
+  (`ACTION_AUTO_START`), выключаем автоматически только то, что включили автоматически.
+  События Activity Recognition — исключение из запрета на старт FGS из фона, старт проходит сразу;
+  если нет — уведомление «Нажми, чтобы включить». Работающему сервису шлём только
+  `ACTION_AUTO_KEEP`/`ACTION_AUTO_EXIT` и не зовём повторно `startForeground()`.
+  На EXIT выключение отложено на `EXIT_GRACE_MS` (светофор/пробка), новый ENTER его отменяет;
+  таймер сверяется с `elapsedRealtime`, т.к. `Handler` в глубоком сне стоит.
+- Ручное выключение в дороге (`Prefs.inVehicle`) запоминается в `Prefs.suppressedAt`: ENTER
+  не включает точки, пока не будет EXIT и ≥10 мин вне транспорта (новая поездка) или 12 ч.
 - `MainActivity` — настройки. `Prefs` — все ключи SharedPreferences.
 
 ## Важные ограничения

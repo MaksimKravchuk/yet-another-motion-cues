@@ -1,13 +1,8 @@
 package com.maxlab.motioncues;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.app.StatusBarManager;
-import android.bluetooth.BluetoothAdapter;
-import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothManager;
 import android.content.ComponentName;
-import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.drawable.Icon;
@@ -31,18 +26,15 @@ import android.widget.TextView;
 import android.widget.Toast;
 import com.google.android.gms.tasks.OnFailureListener;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 public class MainActivity extends Activity {
     static final String EXTRA_AUTOSTART = "autostart";
-    private static final int REQ_PERMS = 1, REQ_BT = 2;
-    private static final String BT_PERM = "android.permission.BLUETOOTH_CONNECT";
+    private static final int REQ_PERMS = 1, REQ_DRIVE = 2;
 
-    private Button permBtn, toggleBtn, devBtn;
-    private TextView status, sensLbl, sizeLbl, intLbl, devLbl, driveLbl;
-    private Switch autoSw, driveSw;
+    private Button permBtn, toggleBtn;
+    private TextView status, sensLbl, sizeLbl, intLbl, driveLbl;
+    private Switch driveSw;
     private LinearLayout ll;
     private final Handler h = new Handler(Looper.getMainLooper());
 
@@ -146,36 +138,22 @@ public class MainActivity extends Activity {
         driveSw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton c, boolean v) {
                 Prefs.get(MainActivity.this).edit().putBoolean(Prefs.AUTO_DRIVE, v).apply();
-                if (!v) DriveReceiver.unregister(MainActivity.this);
-                else if (DriveReceiver.hasPerm(MainActivity.this)) registerDrive();
-                else requestPermissions(new String[]{DriveReceiver.PERM}, REQ_PERMS);
+                if (!v) {
+                    DriveReceiver.unregister(MainActivity.this);
+                    Prefs.resetRide(MainActivity.this);
+                    // Событий больше не будет: уже включённые точки теперь выключаются только вручную
+                    if (CuesService.running) Prefs.setAutoStarted(MainActivity.this, false);
+                } else if (DriveReceiver.hasPerm(MainActivity.this)) {
+                    registerDrive();
+                } else {
+                    requestPermissions(new String[]{DriveReceiver.PERM}, REQ_DRIVE);
+                }
                 refresh();
                 CuesService.refreshTile(MainActivity.this);
             }
         });
         ll.addView(driveSw);
         driveLbl = label();
-
-        autoSw = new Switch(this);
-        autoSw.setPadding(0, dp(12), 0, 0);
-        autoSw.setText("Включать при подключении к Bluetooth машины и выключать при отключении");
-        autoSw.setChecked(Prefs.autoBt(this));
-        autoSw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override public void onCheckedChanged(CompoundButton c, boolean v) {
-                Prefs.get(MainActivity.this).edit().putBoolean(Prefs.AUTO_BT, v).apply();
-                if (v && (!hasBtPerm() || Prefs.devices(MainActivity.this).isEmpty())) pickDevices();
-                refresh();
-                CuesService.refreshTile(MainActivity.this);
-            }
-        });
-        ll.addView(autoSw);
-        devLbl = label();
-        devBtn = new Button(this);
-        devBtn.setText("Выбрать устройства машины");
-        devBtn.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { pickDevices(); }
-        });
-        ll.addView(devBtn);
 
         setContentView(sv);
 
@@ -235,67 +213,22 @@ public class MainActivity extends Activity {
 
     private void startCues() {
         if (!Settings.canDrawOverlays(this)) { refresh(); return; }
-        Prefs.setAutoStarted(this, false);
         startForegroundService(new Intent(this, CuesService.class));
-    }
-
-    private boolean hasBtPerm() {
-        return Build.VERSION.SDK_INT < 31 || checkSelfPermission(BT_PERM) == PackageManager.PERMISSION_GRANTED;
-    }
-
-    private void pickDevices() {
-        if (!hasBtPerm()) { requestPermissions(new String[]{BT_PERM}, REQ_BT); return; }
-        BluetoothManager bm = getSystemService(BluetoothManager.class);
-        BluetoothAdapter a = bm != null ? bm.getAdapter() : null;
-        if (a == null) { toast("Bluetooth недоступен"); return; }
-        Set<BluetoothDevice> bonded;
-        try { bonded = a.getBondedDevices(); } catch (SecurityException e) { toast("Нет доступа к Bluetooth"); return; }
-        if (bonded == null || bonded.isEmpty()) { toast("Нет сопряжённых устройств — сначала подключи телефон к машине"); return; }
-
-        final List<String> entries = new ArrayList<String>();
-        List<String> names = new ArrayList<String>();
-        for (BluetoothDevice d : bonded) {
-            String name;
-            try { name = d.getName(); } catch (SecurityException e) { name = null; }
-            if (name == null) name = d.getAddress();
-            entries.add(d.getAddress() + "\t" + name);
-            names.add(name);
-        }
-        final boolean[] checked = new boolean[entries.size()];
-        for (int i = 0; i < entries.size(); i++) {
-            String addr = entries.get(i).substring(0, entries.get(i).indexOf('\t'));
-            checked[i] = Prefs.isCarDevice(this, addr);
-        }
-        new AlertDialog.Builder(this)
-                .setTitle("Bluetooth машины")
-                .setMultiChoiceItems(names.toArray(new String[0]), checked,
-                        new DialogInterface.OnMultiChoiceClickListener() {
-                            @Override public void onClick(DialogInterface d, int w, boolean v) { checked[w] = v; }
-                        })
-                .setPositiveButton("Готово", new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int w) {
-                        Set<String> sel = new HashSet<String>();
-                        for (int i = 0; i < checked.length; i++) if (checked[i]) sel.add(entries.get(i));
-                        Prefs.get(MainActivity.this).edit().putStringSet(Prefs.BT_DEVICES, sel).apply();
-                        refresh();
-                    }
-                })
-                .setNegativeButton("Отмена", null)
-                .show();
     }
 
     @Override
     public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
         super.onRequestPermissionsResult(code, perms, res);
-        if (code == REQ_BT) {
-            if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) pickDevices();
-            else toast("Без доступа к Bluetooth автовключение не работает");
-            refresh();
-        }
         for (int i = 0; i < perms.length && i < res.length; i++) {
             if (!DriveReceiver.PERM.equals(perms[i])) continue;
             if (res[i] == PackageManager.PERMISSION_GRANTED) {
                 registerDrive();
+            } else if (code == REQ_DRIVE && !shouldShowRequestPermissionRationale(DriveReceiver.PERM)) {
+                // «Больше не спрашивать»: диалога не будет, выдать можно только в настройках.
+                // Переключатель оставляем — после возврата onResume подпишется сам.
+                toast("Разреши «Физическая активность» в настройках приложения");
+                startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:" + getPackageName())));
             } else {
                 driveSw.setChecked(false);
                 toast("Без разрешения «Физическая активность» автовключение в дороге не работает");
@@ -328,6 +261,9 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        // Подписка могла слететь (force stop, сброс Play Services, разрешение выдали в настройках,
+        // не удалось подписаться при загрузке). Повторная подписка безопасна.
+        if (Prefs.autoDrive(this) && DriveReceiver.hasPerm(this)) DriveReceiver.register(this);
         refresh();
     }
 
@@ -347,12 +283,6 @@ public class MainActivity extends Activity {
         driveLbl.setText(!drive ? "Автовключение в дороге выключено"
                 : !DriveReceiver.hasPerm(this) ? "Нужно разрешение «Физическая активность»"
                 : "Включится, когда телефон поймёт, что ты едешь");
-        boolean auto = Prefs.autoBt(this);
-        devBtn.setEnabled(auto);
-        String names = Prefs.deviceNames(this);
-        devLbl.setText(!auto ? "Автовключение выключено"
-                : !hasBtPerm() ? "Нужен доступ к Bluetooth"
-                : names.isEmpty() ? "Устройства не выбраны" : "Машина: " + names);
     }
 
     private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_LONG).show(); }

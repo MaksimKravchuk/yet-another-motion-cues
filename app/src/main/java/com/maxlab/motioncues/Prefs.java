@@ -2,8 +2,6 @@ package com.maxlab.motioncues;
 
 import android.content.Context;
 import android.content.SharedPreferences;
-import java.util.HashSet;
-import java.util.Set;
 
 final class Prefs {
     static final String NAME = "cfg";
@@ -13,9 +11,11 @@ final class Prefs {
     static final String COLOR = "color";         // 0 авто, 1 тёмные, 2 светлые, 3 акцент
     static final String MOTION_ONLY = "motion_only";
     static final String AUTO_DRIVE = "auto_drive"; // включать, когда еду (Activity Recognition)
-    static final String AUTO_BT = "auto_bt";
-    static final String BT_DEVICES = "bt_devices"; // "addr\tname"
     static final String AUTO_STARTED = "auto_started";
+    // Состояние поездки по событиям DriveReceiver
+    static final String IN_VEHICLE = "in_vehicle";       // последнее событие — ENTER
+    static final String LAST_EXIT = "last_exit";         // время последнего EXIT, мс
+    static final String SUPPRESSED_AT = "suppressed_at"; // когда выключили вручную в дороге, 0 — нет
 
     static SharedPreferences get(Context c) { return c.getSharedPreferences(NAME, Context.MODE_PRIVATE); }
     static int sens(Context c) { return get(c).getInt(SENS, 5); }
@@ -24,24 +24,19 @@ final class Prefs {
     static int color(Context c) { return get(c).getInt(COLOR, 0); }
     static boolean motionOnly(Context c) { return get(c).getBoolean(MOTION_ONLY, false); }
     static boolean autoDrive(Context c) { return get(c).getBoolean(AUTO_DRIVE, true); }
-    static boolean autoBt(Context c) { return get(c).getBoolean(AUTO_BT, false); }
     static boolean autoStarted(Context c) { return get(c).getBoolean(AUTO_STARTED, false); }
     static void setAutoStarted(Context c, boolean v) { get(c).edit().putBoolean(AUTO_STARTED, v).apply(); }
 
-    static Set<String> devices(Context c) {
-        return new HashSet<String>(get(c).getStringSet(BT_DEVICES, new HashSet<String>()));
+    static boolean inVehicle(Context c) { return get(c).getBoolean(IN_VEHICLE, false); }
+    static long lastExit(Context c) { return get(c).getLong(LAST_EXIT, 0); }
+    static long suppressedAt(Context c) { return get(c).getLong(SUPPRESSED_AT, 0); }
+    static void setSuppressedAt(Context c, long t) { get(c).edit().putLong(SUPPRESSED_AT, t).apply(); }
+    static void setEnter(Context c) { get(c).edit().putBoolean(IN_VEHICLE, true).apply(); }
+    static void setExit(Context c, long t) {
+        get(c).edit().putBoolean(IN_VEHICLE, false).putLong(LAST_EXIT, t).apply();
     }
-    static boolean isCarDevice(Context c, String addr) {
-        for (String s : devices(c)) if (s.startsWith(addr + "\t")) return true;
-        return false;
-    }
-    static String deviceNames(Context c) {
-        StringBuilder sb = new StringBuilder();
-        for (String s : devices(c)) {
-            int i = s.indexOf('\t');
-            if (sb.length() > 0) sb.append(", ");
-            sb.append(i >= 0 ? s.substring(i + 1) : s);
-        }
-        return sb.toString();
+    /** Забыть поездку: после перезагрузки или выключения автовключения события могли потеряться. */
+    static void resetRide(Context c) {
+        get(c).edit().putBoolean(IN_VEHICLE, false).putLong(SUPPRESSED_AT, 0).apply();
     }
 }

@@ -11,7 +11,8 @@ public class BootReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context ctx, Intent intent) {
         String a = intent.getAction();
-        if (!Intent.ACTION_BOOT_COMPLETED.equals(a) && !Intent.ACTION_MY_PACKAGE_REPLACED.equals(a)) return;
+        if (Intent.ACTION_BOOT_COMPLETED.equals(a)) Prefs.resetRide(ctx); // события до перезагрузки могли потеряться
+        else if (!Intent.ACTION_MY_PACKAGE_REPLACED.equals(a)) return;
         if (!Prefs.autoDrive(ctx) || !DriveReceiver.hasPerm(ctx)) return;
         // Держим процесс, пока запрос не дошёл до Play Services
         final PendingResult pr = goAsync();

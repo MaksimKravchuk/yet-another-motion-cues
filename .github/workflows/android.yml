@@ -38,7 +38,9 @@ jobs:
         run: |
           name=$(sed -nE 's/^\s*versionName\s*=\s*"([^"]+)".*/\1/p' app/build.gradle.kts)
           code=$(sed -nE 's/^\s*versionCode\s*=\s*([0-9]+).*/\1/p' app/build.gradle.kts)
-          test -n "$name" && test -n "$code"
+          # Не через &&: bash -e не останавливается на провале не последней команды списка
+          [ -n "$name" ] || { echo "::error::versionName не найден в app/build.gradle.kts"; exit 1; }
+          [ -n "$code" ] || { echo "::error::versionCode не найден в app/build.gradle.kts"; exit 1; }
           echo "name=$name" >> "$GITHUB_OUTPUT"
           cp app/build/outputs/apk/release/app-release.apk "MotionCues-$name.apk"
           echo "Motion Cues $name (versionCode $code)" >> "$GITHUB_STEP_SUMMARY"
@@ -67,9 +69,14 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           tag="v$VERSION"
-          if gh release view "$tag" > /dev/null 2>&1; then
+          draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2> /dev/null || echo none)
+          if [ "$draft" = "false" ]; then
             echo "::notice::Релиз $tag уже есть. Чтобы выпустить новый, подними versionCode/versionName в app/build.gradle.kts"
             exit 0
+          fi
+          if [ "$draft" = "true" ]; then
+            # Черновик остаётся, если прошлый запуск упал на загрузке APK, — публикуем заново
+            gh release delete "$tag" --yes
           fi
           # Постоянное имя файла: .../releases/latest/download/MotionCues.apk всегда ведёт на свежую версию
           mv "MotionCues-$VERSION.apk" MotionCues.apk

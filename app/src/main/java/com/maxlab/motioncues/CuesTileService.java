@@ -21,7 +21,7 @@ public class CuesTileService extends TileService {
         t.setState(on ? Tile.STATE_ACTIVE : Tile.STATE_INACTIVE);
         t.setLabel("Motion Cues");
         t.setSubtitle(on ? (Prefs.autoStarted(this) ? "Вкл · авто" : "Вкл")
-                : (Prefs.autoDrive(this) || Prefs.autoBt(this) ? "Выкл · авто" : "Выкл"));
+                : (Prefs.autoDrive(this) && DriveReceiver.hasPerm(this) ? "Выкл · авто" : "Выкл"));
         t.updateTile();
     }
 
@@ -33,7 +33,6 @@ public class CuesTileService extends TileService {
             openApp(false);
             return;
         } else {
-            Prefs.setAutoStarted(this, false);
             try {
                 startForegroundService(new Intent(this, CuesService.class));
             } catch (Exception e) {

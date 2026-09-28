@@ -20,6 +20,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.service.quicksettings.TileService;
 import android.view.Display;
@@ -31,14 +32,27 @@ public class CuesService extends Service implements SensorEventListener,
 
     static final String ACTION_STOP = "com.maxlab.motioncues.STOP";
     static final String ACTION_AUTO_START = "com.maxlab.motioncues.AUTO_START";
+    static final String ACTION_AUTO_KEEP = "com.maxlab.motioncues.AUTO_KEEP"; // поездка продолжается
     static final String ACTION_AUTO_EXIT = "com.maxlab.motioncues.AUTO_EXIT";
     static final String CHANNEL = "cues";
     private static final int PROMPT_ID = 2;
     private static final long EXIT_GRACE_MS = 2 * 60 * 1000; // не гасим на светофоре и в пробке
+    private static final long GRACE_TICK_MS = 10 * 1000;
     static volatile boolean running = false;
 
     private final Handler h = new Handler(Looper.getMainLooper());
-    private final Runnable autoStop = new Runnable() { @Override public void run() { stopSelf(); } };
+    private long exitDeadline = 0; // elapsedRealtime отложенного выключения, 0 — не запланировано
+    private boolean autoStopping = false;
+    // Handler считает uptime, который стоит в глубоком сне, поэтому сверяемся с elapsedRealtime
+    // и тикаем часто: после пробуждения точки гаснут в течение GRACE_TICK_MS, а не через 2 минуты.
+    private final Runnable graceTick = new Runnable() {
+        @Override public void run() {
+            long left = exitDeadline - SystemClock.elapsedRealtime();
+            if (left > 0) { h.postDelayed(this, Math.min(left, GRACE_TICK_MS)); return; }
+            autoStopping = true;
+            stopSelf();
+        }
+    };
 
     private WindowManager wm;
     private CuesView view;
@@ -64,13 +78,12 @@ public class CuesService extends Service implements SensorEventListener,
         nm.createNotificationChannel(ch);
     }
 
-    /** Автовключение (Bluetooth машины, распознана поездка). Если старт из фона запрещён — уведомление. */
-    static void autoStart(Context c, String reason) {
+    /** Распознана поездка. Если старт из фона всё же запрещён — уведомление «Нажми, чтобы включить». */
+    static void autoStart(Context c) {
         if (running) {
-            // Снова в пути — отменяем отложенное выключение, если включали автоматически
-            if (Prefs.autoStarted(c)) {
-                try { c.startService(new Intent(c, CuesService.class)); } catch (Exception ignored) {}
-            }
+            // Снова в пути — отменяем отложенное выключение
+            try { c.startService(new Intent(c, CuesService.class).setAction(ACTION_AUTO_KEEP)); }
+            catch (Exception ignored) {}
             return;
         }
         if (!Settings.canDrawOverlays(c)) return;
@@ -84,7 +97,7 @@ public class CuesService extends Service implements SensorEventListener,
                     PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
             Notification n = new Notification.Builder(c, CHANNEL)
                     .setSmallIcon(R.drawable.ic_tile)
-                    .setContentTitle(reason)
+                    .setContentTitle("Похоже, ты в дороге")
                     .setContentText("Нажми, чтобы включить Motion Cues")
                     .setContentIntent(pi)
                     .setAutoCancel(true)
@@ -94,17 +107,19 @@ public class CuesService extends Service implements SensorEventListener,
         }
     }
 
-    /** Поездка закончилась: выключаем, только если включали автоматически. delayed — через EXIT_GRACE_MS. */
-    static void autoStop(Context c, boolean delayed) {
-        try { c.getSystemService(NotificationManager.class).cancel(PROMPT_ID); } catch (Exception ignored) {}
+    /** Поездка закончилась: выключаем через EXIT_GRACE_MS, только если включали автоматически. */
+    static void autoStop(Context c) {
+        cancelPrompt(c);
         if (!running || !Prefs.autoStarted(c)) return;
-        if (delayed) {
-            try {
-                c.startService(new Intent(c, CuesService.class).setAction(ACTION_AUTO_EXIT));
-                return;
-            } catch (Exception ignored) {}
+        try {
+            c.startService(new Intent(c, CuesService.class).setAction(ACTION_AUTO_EXIT));
+        } catch (Exception e) {
+            c.stopService(new Intent(c, CuesService.class));
         }
-        c.stopService(new Intent(c, CuesService.class));
+    }
+
+    private static void cancelPrompt(Context c) {
+        try { c.getSystemService(NotificationManager.class).cancel(PROMPT_ID); } catch (Exception ignored) {}
     }
 
     @Override
@@ -114,23 +129,29 @@ public class CuesService extends Service implements SensorEventListener,
             stopSelf();
             return START_NOT_STICKY;
         }
-        if (ACTION_AUTO_EXIT.equals(action)) {
-            if (view == null) stopSelf(); // сервис успел остановиться — не оставляем пустой
-            else if (Prefs.autoStarted(this)) {
-                h.removeCallbacks(autoStop);
-                h.postDelayed(autoStop, EXIT_GRACE_MS);
+        if (ACTION_AUTO_KEEP.equals(action) || ACTION_AUTO_EXIT.equals(action)) {
+            // Команды только для уже работающих точек. Если сервис успел остановиться, это новый
+            // пустой экземпляр — не оставляем его и не зовём startForeground() из фона.
+            if (view == null) stopSelf();
+            else if (ACTION_AUTO_KEEP.equals(action)) cancelGrace();
+            else if (Prefs.autoStarted(this) && exitDeadline == 0) {
+                exitDeadline = SystemClock.elapsedRealtime() + EXIT_GRACE_MS;
+                h.postDelayed(graceTick, GRACE_TICK_MS);
             }
             return START_NOT_STICKY;
         }
-        h.removeCallbacks(autoStop);
-        // Уже показываем: только отменили отложенное выключение. startForeground() повторно не
-        // зовём — из фона Android 12+ может его запретить.
+        // Уже показываем. startForeground() повторно не зовём — из фона Android 12+ может его запретить.
         if (view != null) return START_NOT_STICKY;
-        if (ACTION_AUTO_START.equals(action)) Prefs.setAutoStarted(this, true);
+        Prefs.setAutoStarted(this, ACTION_AUTO_START.equals(action));
         goForeground();
         if (!Settings.canDrawOverlays(this)) { stopSelf(); return START_NOT_STICKY; }
         start();
         return START_NOT_STICKY;
+    }
+
+    private void cancelGrace() {
+        h.removeCallbacks(graceTick);
+        exitDeadline = 0;
     }
 
     private void goForeground() {
@@ -184,6 +205,8 @@ public class CuesService extends Service implements SensorEventListener,
         if (lin != null) sm.registerListener(this, lin, SensorManager.SENSOR_DELAY_GAME);
         if (rv != null) sm.registerListener(this, rv, SensorManager.SENSOR_DELAY_GAME);
 
+        Prefs.setSuppressedAt(this, 0); // включили — значит, точки снова нужны
+        cancelPrompt(this);
         Prefs.get(this).registerOnSharedPreferenceChangeListener(this);
         running = true;
         refreshTile(this);
@@ -287,7 +310,11 @@ public class CuesService extends Service implements SensorEventListener,
     @Override
     public void onDestroy() {
         running = false;
-        h.removeCallbacks(autoStop);
+        cancelGrace();
+        // Выключили вручную посреди поездки — не включаем снова до следующей поездки
+        if (view != null && !autoStopping && Prefs.inVehicle(this)) {
+            Prefs.setSuppressedAt(this, System.currentTimeMillis());
+        }
         Prefs.setAutoStarted(this, false);
         if (sm != null) sm.unregisterListener(this);
         Prefs.get(this).unregisterOnSharedPreferenceChangeListener(this);
