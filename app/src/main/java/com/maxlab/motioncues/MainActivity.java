@@ -29,6 +29,7 @@ import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
+import com.google.android.gms.tasks.OnFailureListener;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -36,12 +37,12 @@ import java.util.Set;
 
 public class MainActivity extends Activity {
     static final String EXTRA_AUTOSTART = "autostart";
-    private static final int REQ_NOTIF = 1, REQ_BT = 2;
+    private static final int REQ_PERMS = 1, REQ_BT = 2;
     private static final String BT_PERM = "android.permission.BLUETOOTH_CONNECT";
 
     private Button permBtn, toggleBtn, devBtn;
-    private TextView status, sensLbl, sizeLbl, intLbl, devLbl;
-    private Switch autoSw;
+    private TextView status, sensLbl, sizeLbl, intLbl, devLbl, driveLbl;
+    private Switch autoSw, driveSw;
     private LinearLayout ll;
     private final Handler h = new Handler(Looper.getMainLooper());
 
@@ -139,7 +140,24 @@ public class MainActivity extends Activity {
 
         // ---- Автовключение
         header("Автовключение");
+        driveSw = new Switch(this);
+        driveSw.setText("Включать, когда еду в машине, автобусе или поезде, и выключать после поездки");
+        driveSw.setChecked(Prefs.autoDrive(this));
+        driveSw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton c, boolean v) {
+                Prefs.get(MainActivity.this).edit().putBoolean(Prefs.AUTO_DRIVE, v).apply();
+                if (!v) DriveReceiver.unregister(MainActivity.this);
+                else if (DriveReceiver.hasPerm(MainActivity.this)) registerDrive();
+                else requestPermissions(new String[]{DriveReceiver.PERM}, REQ_PERMS);
+                refresh();
+                CuesService.refreshTile(MainActivity.this);
+            }
+        });
+        ll.addView(driveSw);
+        driveLbl = label();
+
         autoSw = new Switch(this);
+        autoSw.setPadding(0, dp(12), 0, 0);
         autoSw.setText("Включать при подключении к Bluetooth машины и выключать при отключении");
         autoSw.setChecked(Prefs.autoBt(this));
         autoSw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
@@ -161,10 +179,13 @@ public class MainActivity extends Activity {
 
         setContentView(sv);
 
+        List<String> perms = new ArrayList<String>();
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, REQ_NOTIF);
+            perms.add("android.permission.POST_NOTIFICATIONS");
         }
+        if (Prefs.autoDrive(this) && !DriveReceiver.hasPerm(this)) perms.add(DriveReceiver.PERM);
+        if (!perms.isEmpty()) requestPermissions(perms.toArray(new String[0]), REQ_PERMS);
         handleAutostart(getIntent());
     }
 
@@ -271,6 +292,24 @@ public class MainActivity extends Activity {
             else toast("Без доступа к Bluetooth автовключение не работает");
             refresh();
         }
+        for (int i = 0; i < perms.length && i < res.length; i++) {
+            if (!DriveReceiver.PERM.equals(perms[i])) continue;
+            if (res[i] == PackageManager.PERMISSION_GRANTED) {
+                registerDrive();
+            } else {
+                driveSw.setChecked(false);
+                toast("Без разрешения «Физическая активность» автовключение в дороге не работает");
+            }
+            refresh();
+        }
+    }
+
+    private void registerDrive() {
+        DriveReceiver.register(this).addOnFailureListener(this, new OnFailureListener() {
+            @Override public void onFailure(Exception e) {
+                toast("Не удалось включить распознавание поездки — проверь Google Play Services");
+            }
+        });
     }
 
     private void addTile() {
@@ -304,6 +343,10 @@ public class MainActivity extends Activity {
         intLbl.setText("Интенсивность (видимость точек): " + Prefs.intensity(this) + "%");
         sensLbl.setText("Сила смещения: " + Prefs.sens(this));
         sizeLbl.setText("Размер точек: " + Prefs.size(this) + " dp");
+        boolean drive = Prefs.autoDrive(this);
+        driveLbl.setText(!drive ? "Автовключение в дороге выключено"
+                : !DriveReceiver.hasPerm(this) ? "Нужно разрешение «Физическая активность»"
+                : "Включится, когда телефон поймёт, что ты едешь");
         boolean auto = Prefs.autoBt(this);
         devBtn.setEnabled(auto);
         String names = Prefs.deviceNames(this);

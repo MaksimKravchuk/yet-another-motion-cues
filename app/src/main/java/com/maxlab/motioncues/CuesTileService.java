@@ -21,7 +21,7 @@ public class CuesTileService extends TileService {
         t.setState(on ? Tile.STATE_ACTIVE : Tile.STATE_INACTIVE);
         t.setLabel("Motion Cues");
         t.setSubtitle(on ? (Prefs.autoStarted(this) ? "Вкл · авто" : "Вкл")
-                : (Prefs.autoBt(this) ? "Выкл · авто BT" : "Выкл"));
+                : (Prefs.autoDrive(this) || Prefs.autoBt(this) ? "Выкл · авто" : "Выкл"));
         t.updateTile();
     }
 

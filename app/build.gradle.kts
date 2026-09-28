@@ -10,8 +10,8 @@ android {
         applicationId = "com.maxlab.motioncues"
         minSdk = 29
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
     }
 
     // Тот же ключ, которым подписаны APK 1.0/1.1 — обновления ставятся поверх без удаления.
@@ -47,5 +47,6 @@ android {
 }
 
 dependencies {
-    // Пока без зависимостей. Для распознавания поездки см. CLAUDE.md → TODO.
+    // Activity Recognition: автовключение, когда еду (DriveReceiver)
+    implementation("com.google.android.gms:play-services-location:21.4.0")
 }

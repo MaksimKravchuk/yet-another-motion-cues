@@ -17,7 +17,9 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.provider.Settings;
 import android.service.quicksettings.TileService;
 import android.view.Display;
@@ -28,8 +30,15 @@ public class CuesService extends Service implements SensorEventListener,
         SharedPreferences.OnSharedPreferenceChangeListener {
 
     static final String ACTION_STOP = "com.maxlab.motioncues.STOP";
+    static final String ACTION_AUTO_START = "com.maxlab.motioncues.AUTO_START";
+    static final String ACTION_AUTO_EXIT = "com.maxlab.motioncues.AUTO_EXIT";
     static final String CHANNEL = "cues";
+    private static final int PROMPT_ID = 2;
+    private static final long EXIT_GRACE_MS = 2 * 60 * 1000; // не гасим на светофоре и в пробке
     static volatile boolean running = false;
+
+    private final Handler h = new Handler(Looper.getMainLooper());
+    private final Runnable autoStop = new Runnable() { @Override public void run() { stopSelf(); } };
 
     private WindowManager wm;
     private CuesView view;
@@ -55,15 +64,72 @@ public class CuesService extends Service implements SensorEventListener,
         nm.createNotificationChannel(ch);
     }
 
+    /** Автовключение (Bluetooth машины, распознана поездка). Если старт из фона запрещён — уведомление. */
+    static void autoStart(Context c, String reason) {
+        if (running) {
+            // Снова в пути — отменяем отложенное выключение, если включали автоматически
+            if (Prefs.autoStarted(c)) {
+                try { c.startService(new Intent(c, CuesService.class)); } catch (Exception ignored) {}
+            }
+            return;
+        }
+        if (!Settings.canDrawOverlays(c)) return;
+        Intent i = new Intent(c, CuesService.class).setAction(ACTION_AUTO_START);
+        try {
+            c.startForegroundService(i);
+        } catch (Exception e) {
+            // Система не дала стартовать из фона — предлагаем включить одним тапом
+            ensureChannel(c);
+            PendingIntent pi = PendingIntent.getForegroundService(c, 5, i,
+                    PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+            Notification n = new Notification.Builder(c, CHANNEL)
+                    .setSmallIcon(R.drawable.ic_tile)
+                    .setContentTitle(reason)
+                    .setContentText("Нажми, чтобы включить Motion Cues")
+                    .setContentIntent(pi)
+                    .setAutoCancel(true)
+                    .build();
+            try { c.getSystemService(NotificationManager.class).notify(PROMPT_ID, n); }
+            catch (Exception ignored) {}
+        }
+    }
+
+    /** Поездка закончилась: выключаем, только если включали автоматически. delayed — через EXIT_GRACE_MS. */
+    static void autoStop(Context c, boolean delayed) {
+        try { c.getSystemService(NotificationManager.class).cancel(PROMPT_ID); } catch (Exception ignored) {}
+        if (!running || !Prefs.autoStarted(c)) return;
+        if (delayed) {
+            try {
+                c.startService(new Intent(c, CuesService.class).setAction(ACTION_AUTO_EXIT));
+                return;
+            } catch (Exception ignored) {}
+        }
+        c.stopService(new Intent(c, CuesService.class));
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+        String action = intent != null ? intent.getAction() : null;
+        if (ACTION_STOP.equals(action)) {
             stopSelf();
             return START_NOT_STICKY;
         }
+        if (ACTION_AUTO_EXIT.equals(action)) {
+            if (view == null) stopSelf(); // сервис успел остановиться — не оставляем пустой
+            else if (Prefs.autoStarted(this)) {
+                h.removeCallbacks(autoStop);
+                h.postDelayed(autoStop, EXIT_GRACE_MS);
+            }
+            return START_NOT_STICKY;
+        }
+        h.removeCallbacks(autoStop);
+        // Уже показываем: только отменили отложенное выключение. startForeground() повторно не
+        // зовём — из фона Android 12+ может его запретить.
+        if (view != null) return START_NOT_STICKY;
+        if (ACTION_AUTO_START.equals(action)) Prefs.setAutoStarted(this, true);
         goForeground();
         if (!Settings.canDrawOverlays(this)) { stopSelf(); return START_NOT_STICKY; }
-        if (view == null) start();
+        start();
         return START_NOT_STICKY;
     }
 
@@ -221,6 +287,7 @@ public class CuesService extends Service implements SensorEventListener,
     @Override
     public void onDestroy() {
         running = false;
+        h.removeCallbacks(autoStop);
         Prefs.setAutoStarted(this, false);
         if (sm != null) sm.unregisterListener(this);
         Prefs.get(this).unregisterOnSharedPreferenceChangeListener(this);
